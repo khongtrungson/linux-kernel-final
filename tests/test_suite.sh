@@ -1,0 +1,185 @@
+#!/bin/bash
+
+# ==============================================================================
+# Script kiểm thử tích hợp (Test Suite) cho linux-kernel-final
+# Đảm bảo kiểm tra cấu trúc thư mục, biên dịch và hoạt động cơ bản của hệ thống.
+# ==============================================================================
+
+# Khai báo các đường dẫn thư mục và file cấu hình
+readonly ROOT_DIR="/home/trungson/Desktop/linux-kernel-final"
+readonly DIR_SHELL="${ROOT_DIR}/shell"
+readonly DIR_SOCKET="${ROOT_DIR}/socket"
+readonly DIR_KERNEL="${ROOT_DIR}/kernel"
+readonly DIR_TESTS="${ROOT_DIR}/tests"
+
+# Các file cần kiểm tra
+readonly FILE_SYSTEM_TOOL="${DIR_SHELL}/system_tool.sh"
+readonly FILE_SERVER="${DIR_SOCKET}/server.c"
+readonly FILE_CLIENT="${DIR_SOCKET}/client.c"
+readonly FILE_COMMON_H="${DIR_SOCKET}/common.h"
+readonly FILE_MAKEFILE_SOCKET="${DIR_SOCKET}/Makefile"
+readonly FILE_KERNEL_C="${DIR_KERNEL}/my_kernel_api.c"
+readonly FILE_MAKEFILE_KERNEL="${DIR_KERNEL}/Makefile"
+readonly FILE_MAKEFILE_ROOT="${ROOT_DIR}/Makefile"
+
+# Hàm in kết quả kiểm thử dạng màu sắc
+print_ok() {
+    local msg=$1
+    echo -e "[\e[32m  OK  \e[0m] ${msg}"
+}
+
+print_fail() {
+    local msg=$1
+    echo -e "[\e[31m FAIL \e[0m] ${msg}"
+}
+
+# 1. Kiểm tra cấu trúc thư mục
+check_directories() {
+    local success=0
+
+    echo "--- GIAI ĐOẠN 1: Kiểm tra cấu trúc thư mục ---"
+    
+    for dir in "${DIR_SHELL}" "${DIR_SOCKET}" "${DIR_KERNEL}" "${DIR_TESTS}"; do
+        if [ -d "${dir}" ]; then
+            print_ok "Thư mục tồn tại: ${dir##*/}/"
+        else
+            print_fail "Thư mục thiếu: ${dir##*/}/"
+            success=1
+        fi
+    done
+    
+    return "${success}"
+}
+
+# 2. Kiểm tra sự tồn tại của các file khung (Skeleton Files)
+check_files() {
+    local success=0
+
+    echo "--- GIAI ĐOẠN 2: Kiểm tra các file khung ---"
+
+    for file in "${FILE_SYSTEM_TOOL}" "${FILE_SERVER}" "${FILE_CLIENT}" "${FILE_COMMON_H}" \
+                 "${FILE_MAKEFILE_SOCKET}" "${FILE_KERNEL_C}" "${FILE_MAKEFILE_KERNEL}" "${FILE_MAKEFILE_ROOT}"; do
+        if [ -f "${file}" ]; then
+            print_ok "File tồn tại: $(basename "${file}")"
+        else
+            print_fail "File thiếu: $(basename "${file}")"
+            success=1
+        fi
+    done
+
+    # Kiểm tra quyền thực thi của system_tool.sh
+    if [ -x "${FILE_SYSTEM_TOOL}" ]; then
+         print_ok "Quyền thực thi của $(basename "${FILE_SYSTEM_TOOL}") chính xác"
+    else
+         print_fail "Không có quyền thực thi cho $(basename "${FILE_SYSTEM_TOOL}")"
+         success=1
+    fi
+
+    return "${success}"
+}
+
+# 3. Kiểm tra biên dịch (Make All)
+check_build() {
+    local success=0
+
+    echo "--- GIAI ĐOẠN 3: Kiểm tra quy trình biên dịch ---"
+
+    # Chạy make all từ thư mục gốc
+    echo "Đang thực hiện biên dịch bằng lệnh: make all..."
+    make -C "${ROOT_DIR}" all > /dev/null 2>&1
+    local make_status=$?
+
+    if [ "${make_status}" -eq 0 ]; then
+        print_ok "Lệnh make all chạy thành công"
+    else
+        print_fail "Lệnh make all thất bại với mã lỗi ${make_status}"
+        return 1
+    fi
+
+    # Kiểm tra các file nhị phân được tạo ra
+    if [ -f "${DIR_SOCKET}/server" ]; then
+        print_ok "File nhị phân server được tạo thành công"
+    else
+        print_fail "Thiếu file nhị phân server"
+        success=1
+    fi
+
+    if [ -f "${DIR_SOCKET}/client" ]; then
+        print_ok "File nhị phân client được tạo thành công"
+    else
+        print_fail "Thiếu file nhị phân client"
+        success=1
+    fi
+
+    if [ -f "${DIR_KERNEL}/my_kernel_api.ko" ]; then
+        print_ok "Linux Kernel Module (my_kernel_api.ko) được tạo thành công"
+    else
+        print_fail "Thiếu Linux Kernel Module (my_kernel_api.ko)"
+        success=1
+    fi
+
+    return "${success}"
+}
+
+# 4. Kiểm tra làm sạch (Make Clean)
+check_clean() {
+    local success=0
+
+    echo "--- GIAI ĐOẠN 4: Kiểm tra quy trình làm sạch (make clean) ---"
+
+    # Chạy make clean từ thư mục gốc
+    echo "Đang thực hiện dọn dẹp bằng lệnh: make clean..."
+    make -C "${ROOT_DIR}" clean > /dev/null 2>&1
+    local clean_status=$?
+
+    if [ "${clean_status}" -eq 0 ]; then
+         print_ok "Lệnh make clean chạy thành công"
+    else
+         print_fail "Lệnh make clean thất bại với mã lỗi ${clean_status}"
+         return 1
+    fi
+
+    # Đảm bảo các file nhị phân và file tạm bị xóa sạch
+    for file in "${DIR_SOCKET}/server" "${DIR_SOCKET}/client" "${DIR_KERNEL}/my_kernel_api.ko" \
+                 "${DIR_KERNEL}/my_kernel_api.o" "${DIR_KERNEL}/my_kernel_api.mod" "${DIR_KERNEL}/my_kernel_api.mod.c"; do
+        if [ -f "${file}" ]; then
+            print_fail "File tạm/nhị phân chưa bị xóa sau make clean: $(basename "${file}")"
+            success=1
+        fi
+    done
+
+    if [ "${success}" -eq 0 ]; then
+        print_ok "Toàn bộ file nhị phân và tệp trung gian đã được dọn sạch sẽ"
+    fi
+
+    return "${success}"
+}
+
+# Điều phối toàn bộ quy trình kiểm thử
+main() {
+    local exit_code=0
+
+    check_directories
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_files
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_build
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_clean
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    echo "=============================================================================="
+    if [ "${exit_code}" -eq 0 ]; then
+        echo -e "\e[32mKẾT QUẢ: KIỂM THỬ THÀNH CÔNG (TẤT CẢ CÁC BƯỚC ĐỀU ĐẠT)\e[0m"
+    else
+        echo -e "\e[31mKẾT QUẢ: KIỂM THỬ THẤT BẠI (CÓ LỖI XẢY RA)\e[0m"
+    fi
+    echo "=============================================================================="
+
+    exit "${exit_code}"
+}
+
+main

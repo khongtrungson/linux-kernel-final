@@ -1,0 +1,22 @@
+# Thư mục ẩn (bắt đầu bằng dấu chấm)
+.*/
+
+_*
+
+# Các tệp biên dịch trung gian của C và Linux Kernel Module
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+.Module.symvers.cmd
+.modules.order.cmd
+
+socket/server
+socket/client
+
+socket/server.log
+socket/*.log

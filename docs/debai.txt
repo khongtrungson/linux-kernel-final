@@ -1,0 +1,3 @@
+Lập trình shell để quản lý file, lập lịch tác vụ, thiết lập thời gian hệ thống, cài đặt/gỡ bỏ các chương trình tự động
+Lập trình quản lý tiến trình, file, socket và network trong Ubuntu
+Lập trình xây dựng 1 mô-đun nhân và tích hợp vào hệ thống Kernel API
