@@ -5,4 +5,9 @@
 #define SERVER_PORT 8888
 #define BUFFER_SIZE 1024
 
+// Định nghĩa các mã lệnh/chuỗi giao thức
+#define CMD_EXIT "EXIT"
+#define RESP_OK "OK"
+#define RESP_ERROR "ERROR"
+
 #endif /* COMMON_H */

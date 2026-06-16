@@ -155,6 +155,98 @@ check_clean() {
     return "${success}"
 }
 
+# Hàm kiểm tra tiến trình zombie
+check_zombie_processes() {
+    local zombie_count=$(ps -eo state | grep -c "Z")
+    if [ "${zombie_count}" -eq 0 ]; then
+        print_ok "Không có tiến trình zombie nào trong hệ thống (zombie count = 0)"
+        return 0
+    else
+        print_fail "Phát hiện có ${zombie_count} tiến trình zombie"
+        return 1
+    fi
+}
+
+# 5. Kiểm tra giao tiếp Socket (Client - Server)
+check_socket_communication() {
+    local success=0
+    echo "--- GIAI ĐOẠN 5: Kiểm tra giao tiếp Socket (Client - Server) ---"
+
+    # Đảm bảo các binaries tồn tại
+    if [ ! -f "${DIR_SOCKET}/server" ] || [ ! -f "${DIR_SOCKET}/client" ]; then
+        print_fail "Thiếu file nhị phân server hoặc client. Không thể kiểm tra Socket."
+        return 1
+    fi
+
+    # Chạy server ở chế độ ngầm (background)
+    "${DIR_SOCKET}/server" > "${DIR_TESTS}/server_test.log" 2>&1 &
+    local server_pid=$!
+
+    # Chờ server khởi động và liên kết cổng
+    sleep 0.5
+
+    # Kiểm tra xem server có đang chạy không
+    if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
+        print_fail "TCP Server không hoạt động sau khi khởi chạy."
+        return 1
+    fi
+    print_ok "TCP Server đã khởi chạy thành công (PID: ${server_pid})"
+
+    # Kịch bản 1: Gửi lệnh thường HELLO và lệnh EXIT qua client
+    echo -e "HELLO\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
+    local client_status1=$?
+
+    if [ "${client_status1}" -eq 0 ]; then
+        print_ok "Client 1 đã trao đổi dữ liệu với Server và thoát sạch sẽ"
+    else
+        print_fail "Client 1 lỗi hoặc thoát với mã ${client_status1}"
+        success=1
+    fi
+
+    # Kiểm tra phản hồi trong file log của client 1
+    if grep -q "Phản hồi từ Server: ERROR" "${DIR_TESTS}/client_test1.log" && \
+       grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test1.log"; then
+        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, OK cho EXIT)"
+    else
+        print_fail "Phản hồi từ Server cho Client 1 không đúng chuẩn"
+        success=1
+    fi
+
+    # Kịch bản 2: Kiểm tra Server vẫn tiếp tục lắng nghe sau khi Client 1 ngắt kết nối
+    if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
+        print_fail "TCP Server đã bị sập/tắt sau khi Client 1 ngắt kết nối."
+        success=1
+    else
+        print_ok "TCP Server vẫn hoạt động sau khi Client 1 thoát"
+
+        # Khởi chạy client 2 để kiểm tra kết nối mới
+        echo "EXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test2.log" 2>&1
+        local client_status2=$?
+
+        if [ "${client_status2}" -eq 0 ] && grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test2.log"; then
+            print_ok "Client 2 kết nối, gửi lệnh EXIT và thoát thành công"
+        else
+            print_fail "Client 2 kết nối thất bại hoặc phản hồi không đúng"
+            success=1
+        fi
+    fi
+
+    # Dọn dẹp: Tắt server bằng SIGTERM và chờ nó kết thúc
+    kill -15 "${server_pid}" >/dev/null 2>&1
+    wait "${server_pid}" >/dev/null 2>&1
+
+    # Kiểm tra tiến trình zombie
+    check_zombie_processes
+    if [ $? -ne 0 ]; then
+        success=1
+    fi
+
+    # Xóa các file log tạm thời
+    rm -f "${DIR_TESTS}/server_test.log" "${DIR_TESTS}/client_test1.log" "${DIR_TESTS}/client_test2.log"
+
+    return "${success}"
+}
+
 # Điều phối toàn bộ quy trình kiểm thử
 main() {
     local exit_code=0
@@ -166,6 +258,9 @@ main() {
     if [ $? -ne 0 ]; then exit_code=1; fi
 
     check_build
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_socket_communication
     if [ $? -ne 0 ]; then exit_code=1; fi
 
     check_clean
