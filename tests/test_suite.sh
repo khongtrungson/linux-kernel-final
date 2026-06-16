@@ -192,8 +192,8 @@ check_socket_communication() {
     fi
     print_ok "TCP Server đã khởi chạy thành công (PID: ${server_pid})"
 
-    # Kịch bản 1: Gửi lệnh thường HELLO và lệnh EXIT qua client
-    echo -e "HELLO\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
+    # Kịch bản 1: Gửi lệnh thường HELLO, lệnh READ_LOG và lệnh EXIT qua client
+    echo -e "HELLO\nREAD_LOG\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
     local client_status1=$?
 
     if [ "${client_status1}" -eq 0 ]; then
@@ -205,8 +205,10 @@ check_socket_communication() {
 
     # Kiểm tra phản hồi trong file log của client 1
     if grep -q "Phản hồi từ Server: ERROR" "${DIR_TESTS}/client_test1.log" && \
+       grep -q -F "[CONNECT] [OK]" "${DIR_TESTS}/client_test1.log" && \
+       grep -q -F "[HELLO] [ERROR]" "${DIR_TESTS}/client_test1.log" && \
        grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test1.log"; then
-        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, OK cho EXIT)"
+        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, log cho READ_LOG, OK cho EXIT)"
     else
         print_fail "Phản hồi từ Server cho Client 1 không đúng chuẩn"
         success=1

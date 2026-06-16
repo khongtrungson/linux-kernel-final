@@ -153,6 +153,50 @@ int main(void) {
                     perror("Lỗi gửi phản hồi OK");
                 }
                 break;
+            } else if (strncmp(buffer, CMD_READ_LOG, strlen(CMD_READ_LOG)) == 0) {
+                printf("Nhận lệnh READ_LOG từ client.\n");
+
+                int fd = open("server.log", O_RDONLY);
+                if (fd < 0) {
+                    char err_response[] = "ERROR:Không thể mở tệp nhật ký";
+                    if (send(client_fd, err_response, sizeof(err_response), 0) < 0) {
+                        perror("Lỗi gửi phản hồi ERROR cho READ_LOG");
+                    }
+                    log_event(client_ip, CMD_READ_LOG, "ERROR");
+                } else {
+                    char ok_prefix[] = "OK:";
+                    if (send(client_fd, ok_prefix, strlen(ok_prefix), 0) < 0) {
+                        perror("Lỗi gửi tiền tố OK:");
+                        close(fd);
+                        log_event(client_ip, CMD_READ_LOG, "ERROR");
+                        break;
+                    }
+
+                    char read_buf[BUFFER_SIZE];
+                    ssize_t bytes_read;
+                    int send_failed = 0;
+                    while ((bytes_read = read(fd, read_buf, sizeof(read_buf))) > 0) {
+                        if (send(client_fd, read_buf, bytes_read, 0) < 0) {
+                            perror("Lỗi gửi dữ liệu log qua socket");
+                            send_failed = 1;
+                            break;
+                        }
+                    }
+
+                    if (bytes_read < 0) {
+                        perror("Lỗi đọc file server.log");
+                    }
+
+                    close(fd);
+
+                    if (!send_failed) {
+                        char end_char = '\0';
+                        if (send(client_fd, &end_char, 1, 0) < 0) {
+                            perror("Lỗi gửi ký tự kết thúc \\0");
+                        }
+                        log_event(client_ip, CMD_READ_LOG, "OK");
+                    }
+                }
             } else {
                 // Ghi log sự kiện nhận lệnh không hợp lệ (ERROR)
                 log_event(client_ip, buffer, RESP_ERROR);

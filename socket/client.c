@@ -58,12 +58,54 @@ int main(void) {
         }
 
         int is_exit = (strcmp(buffer, CMD_EXIT) == 0);
+        int is_read_log = (strcmp(buffer, CMD_READ_LOG) == 0);
 
         // Gửi lệnh qua socket (bao gồm ký tự null kết thúc \0)
         ssize_t valsend = send(sock_fd, buffer, strlen(buffer) + 1, 0);
         if (valsend < 0) {
             perror("Lỗi gửi dữ liệu");
             break;
+        }
+
+        if (is_read_log) {
+            int first_packet = 1;
+            while (1) {
+                memset(buffer, 0, sizeof(buffer));
+                ssize_t valread = recv(sock_fd, buffer, sizeof(buffer) - 1, 0);
+                if (valread < 0) {
+                    perror("Lỗi nhận phản hồi");
+                    break;
+                } else if (valread == 0) {
+                    printf("Máy chủ đã đóng kết nối.\n");
+                    break;
+                }
+
+                int has_null = 0;
+                if (buffer[valread - 1] == '\0') {
+                    has_null = 1;
+                    valread--;
+                }
+                buffer[valread] = '\0';
+
+                if (first_packet) {
+                    first_packet = 0;
+                    if (strncmp(buffer, "ERROR:", 6) == 0) {
+                        printf("Lỗi từ Server: %s\n", buffer + 6);
+                        break;
+                    } else if (strncmp(buffer, "OK:", 3) == 0) {
+                        printf("%s", buffer + 3);
+                    } else {
+                        printf("%s", buffer);
+                    }
+                } else {
+                    printf("%s", buffer);
+                }
+
+                if (has_null) {
+                    break;
+                }
+            }
+            continue;
         }
 
         // Nhận phản hồi từ Server
