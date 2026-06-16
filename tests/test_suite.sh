@@ -178,8 +178,8 @@ check_socket_communication() {
         return 1
     fi
 
-    # Chạy server ở chế độ ngầm (background)
-    "${DIR_SOCKET}/server" > "${DIR_TESTS}/server_test.log" 2>&1 &
+    # Chạy server ở chế độ ngầm (background) trong thư mục socket để log file sinh ra đúng chỗ
+    (cd "${DIR_SOCKET}" && ./server > "${DIR_TESTS}/server_test.log" 2>&1) &
     local server_pid=$!
 
     # Chờ server khởi động và liên kết cổng
@@ -234,6 +234,52 @@ check_socket_communication() {
     # Dọn dẹp: Tắt server bằng SIGTERM và chờ nó kết thúc
     kill -15 "${server_pid}" >/dev/null 2>&1
     wait "${server_pid}" >/dev/null 2>&1
+
+    # Kịch bản 3: Kiểm tra sự tồn tại và tính hợp lệ của server.log
+    local log_file="${DIR_SOCKET}/server.log"
+    if [ -f "${log_file}" ]; then
+        print_ok "File server.log đã được tạo thành công"
+        
+        # Kiểm tra quyền 0644
+        local perm=$(stat -c "%a" "${log_file}")
+        if [ "${perm}" = "644" ]; then
+            print_ok "Quyền file server.log chính xác (0644)"
+        else
+            print_fail "Quyền file server.log không đúng: ${perm} (kỳ vọng 0644)"
+            success=1
+        fi
+
+        # Kiểm tra các dòng log định dạng TIMESTAMP, CLIENT-IP, COMMAND, STATUS
+        # Dòng 1: [TIMESTAMP] [127.0.0.1] [CONNECT] [OK]
+        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[CONNECT\] \[OK\]$' "${log_file}"; then
+            print_ok "Log CONNECT OK có định dạng chính xác"
+        else
+            print_fail "Không tìm thấy log CONNECT OK hoặc sai định dạng"
+            success=1
+        fi
+
+        # Dòng 2: [TIMESTAMP] [127.0.0.1] [HELLO] [ERROR]
+        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[HELLO\] \[ERROR\]$' "${log_file}"; then
+            print_ok "Log HELLO ERROR có định dạng chính xác"
+        else
+            print_fail "Không tìm thấy log HELLO ERROR hoặc sai định dạng"
+            success=1
+        fi
+
+        # Dòng 3: [TIMESTAMP] [127.0.0.1] [EXIT] [OK]
+        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[EXIT\] \[OK\]$' "${log_file}"; then
+            print_ok "Log EXIT OK có định dạng chính xác"
+        else
+            print_fail "Không tìm thấy log EXIT OK hoặc sai định dạng"
+            success=1
+        fi
+    else
+        print_fail "Không thấy file server.log được sinh ra."
+        success=1
+    fi
+
+    # Xóa file log để đảm bảo kiểm thử sạch sẽ
+    rm -f "${log_file}"
 
     # Kiểm tra tiến trình zombie
     check_zombie_processes

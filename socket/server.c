@@ -6,7 +6,56 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <time.h>
 #include "common.h"
+
+// Hàm ghi nhật ký sự kiện sử dụng các cuộc gọi hệ thống cấp thấp POSIX (Low-level I/O)
+void log_event(const char *client_ip, const char *command, const char *status) {
+    int fd = open("server.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        perror("Lỗi mở file server.log để ghi nhật ký");
+        return;
+    }
+
+    time_t rawtime;
+    struct tm *timeinfo;
+    char timestamp[20]; // Định dạng YYYY-MM-DD HH:MM:SS\0
+
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+    if (timeinfo == NULL) {
+        perror("Lỗi lấy thời gian hệ thống");
+        close(fd);
+        return;
+    }
+
+    if (strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo) == 0) {
+        fprintf(stderr, "Lỗi định dạng thời gian\n");
+        close(fd);
+        return;
+    }
+
+    char log_line[BUFFER_SIZE + 100];
+    int len = snprintf(log_line, sizeof(log_line), "[%s] [%s] [%s] [%s]\n", timestamp, client_ip, command, status);
+    if (len < 0 || len >= (int)sizeof(log_line)) {
+        fprintf(stderr, "Lỗi định dạng dòng nhật ký hoặc dòng nhật ký quá dài\n");
+        close(fd);
+        return;
+    }
+
+    // Ghi nguyên khối (atomic write) vào file để tránh chồng chéo luồng dữ liệu
+    ssize_t bytes_written = write(fd, log_line, len);
+    if (bytes_written < 0) {
+        perror("Lỗi ghi dữ liệu vào server.log");
+    } else if (bytes_written < len) {
+        fprintf(stderr, "Lỗi ghi thiếu byte vào server.log\n");
+    }
+
+    if (close(fd) < 0) {
+        perror("Lỗi đóng file server.log");
+    }
+}
 
 int main(void) {
     // Bỏ qua tín hiệu SIGPIPE để tránh crash server khi client đột ngột ngắt kết nối
@@ -72,6 +121,9 @@ int main(void) {
         int client_port = ntohs(client_address.sin_port);
         printf("Client kết nối thành công từ: %s:%d\n", client_ip, client_port);
 
+        // Ghi log sự kiện kết nối thành công [TIMESTAMP] [CLIENT-IP] [CONNECT] [OK]
+        log_event(client_ip, "CONNECT", "OK");
+
         // Vòng lặp con nhận dữ liệu từ client hiện tại
         char buffer[BUFFER_SIZE];
         while (1) {
@@ -92,6 +144,9 @@ int main(void) {
             if (strncmp(buffer, CMD_EXIT, strlen(CMD_EXIT)) == 0) {
                 printf("Nhận lệnh EXIT. Đóng kết nối với client.\n");
                 
+                // Ghi log sự kiện nhận lệnh EXIT thành công
+                log_event(client_ip, CMD_EXIT, RESP_OK);
+
                 char response[] = RESP_OK;
                 // Gửi phản hồi OK kèm ký tự kết thúc chuỗi \0
                 if (send(client_fd, response, sizeof(response), 0) < 0) {
@@ -99,6 +154,9 @@ int main(void) {
                 }
                 break;
             } else {
+                // Ghi log sự kiện nhận lệnh không hợp lệ (ERROR)
+                log_event(client_ip, buffer, RESP_ERROR);
+
                 char response[] = RESP_ERROR;
                 if (send(client_fd, response, sizeof(response), 0) < 0) {
                     perror("Lỗi gửi phản hồi ERROR");
