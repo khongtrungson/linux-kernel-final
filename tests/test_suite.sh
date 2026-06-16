@@ -192,8 +192,8 @@ check_socket_communication() {
     fi
     print_ok "TCP Server đã khởi chạy thành công (PID: ${server_pid})"
 
-    # Kịch bản 1: Gửi lệnh thường HELLO, lệnh READ_LOG, lệnh RUN_CMD và lệnh EXIT qua client
-    echo -e "HELLO\nREAD_LOG\nRUN_CMD echo HelloWorld\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
+    # Kịch bản 1: Gửi lệnh thường HELLO, lệnh READ_LOG, lệnh RUN_CMD, lệnh GET_SYS_INFO và lệnh EXIT qua client
+    echo -e "HELLO\nREAD_LOG\nRUN_CMD echo HelloWorld\nGET_SYS_INFO\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
     local client_status1=$?
 
     if [ "${client_status1}" -eq 0 ]; then
@@ -208,8 +208,9 @@ check_socket_communication() {
        grep -q -F "[CONNECT] [OK]" "${DIR_TESTS}/client_test1.log" && \
        grep -q -F "[HELLO] [ERROR]" "${DIR_TESTS}/client_test1.log" && \
        grep -q "HelloWorld" "${DIR_TESTS}/client_test1.log" && \
+       grep -q "WARNING: Kernel Module not loaded" "${DIR_TESTS}/client_test1.log" && \
        grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test1.log"; then
-        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, log cho READ_LOG, HelloWorld cho RUN_CMD, OK cho EXIT)"
+        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, log cho READ_LOG, HelloWorld cho RUN_CMD, cảnh báo cho GET_SYS_INFO, OK cho EXIT)"
     else
         print_fail "Phản hồi từ Server cho Client 1 không đúng chuẩn"
         success=1

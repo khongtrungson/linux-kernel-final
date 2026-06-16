@@ -11,6 +11,8 @@
 #include <time.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <sys/sysinfo.h>
+#include <ifaddrs.h>
 #include "common.h"
 
 // Hàm xử lý tín hiệu SIGCHLD để dọn dẹp tiến trình con zombie
@@ -21,6 +23,115 @@ void sigchld_handler(int sig) {
         // Dọn dẹp tất cả tiến trình con đã kết thúc
     }
     errno = saved_errno;
+}
+
+// Hàm thu thập thông tin giám sát hệ thống kết hợp Procfs và User Space
+void get_system_info(char *response_buffer, size_t max_len) {
+    char temp[4096];
+    memset(temp, 0, sizeof(temp));
+    size_t offset = 0;
+
+    // 1. RAM / Procfs Kernel
+    int proc_fd = open("/proc/my_kernel_api", O_RDONLY);
+    if (proc_fd >= 0) {
+        char kbuf[512];
+        memset(kbuf, 0, sizeof(kbuf));
+        ssize_t bytes_read = read(proc_fd, kbuf, sizeof(kbuf) - 1);
+        close(proc_fd);
+        if (bytes_read > 0) {
+            while (bytes_read > 0 && (kbuf[bytes_read - 1] == '\n' || kbuf[bytes_read - 1] == '\r' || kbuf[bytes_read - 1] == ' ')) {
+                kbuf[bytes_read - 1] = '\0';
+                bytes_read--;
+            }
+            offset += snprintf(temp + offset, sizeof(temp) - offset, "=== RAM Info (Kernel) ===\n%s\n\n", kbuf);
+        } else {
+            proc_fd = -1;
+        }
+    }
+    
+    if (proc_fd < 0) {
+        struct sysinfo info;
+        if (sysinfo(&info) == 0) {
+            unsigned long free_mem = (info.freeram * info.mem_unit) / 1024;
+            unsigned long total_mem = (info.totalram * info.mem_unit) / 1024;
+            offset += snprintf(temp + offset, sizeof(temp) - offset,
+                               "=== RAM Info (User Space) ===\n"
+                               "[WARNING: Kernel Module not loaded. Using User Space sysinfo()]\n"
+                               "Free Memory: %lu KB / Total Memory: %lu KB\n\n",
+                               free_mem, total_mem);
+        } else {
+            offset += snprintf(temp + offset, sizeof(temp) - offset,
+                               "=== RAM Info ===\n"
+                               "ERROR: Không thể lấy thông tin bộ nhớ\n\n");
+        }
+    }
+
+    // 2. CPU Load
+    FILE *load_f = fopen("/proc/loadavg", "r");
+    if (load_f) {
+        double load1, load5, load15;
+        if (fscanf(load_f, "%lf %lf %lf", &load1, &load5, &load15) == 3) {
+            offset += snprintf(temp + offset, sizeof(temp) - offset,
+                               "=== CPU Load (1m, 5m, 15m) ===\n"
+                               "%.2f, %.2f, %.2f\n\n",
+                               load1, load5, load15);
+        }
+        fclose(load_f);
+    }
+
+    // 3. Network Interfaces & IP Addresses
+    offset += snprintf(temp + offset, sizeof(temp) - offset, "=== Network Interfaces ===\n");
+    
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            if (ifa->ifa_addr->sa_family == AF_INET) {
+                struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+                char ip_str[INET_ADDRSTRLEN];
+                if (inet_ntop(AF_INET, &(sa->sin_addr), ip_str, INET_ADDRSTRLEN)) {
+                    offset += snprintf(temp + offset, sizeof(temp) - offset,
+                                       "Interface: %s | IP Address: %s\n",
+                                       ifa->ifa_name, ip_str);
+                }
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+    offset += snprintf(temp + offset, sizeof(temp) - offset, "\n");
+
+    // Network stats
+    FILE *net_f = fopen("/proc/net/dev", "r");
+    if (net_f) {
+        char line[256];
+        if (fgets(line, sizeof(line), net_f)) {}
+        if (fgets(line, sizeof(line), net_f)) {}
+        offset += snprintf(temp + offset, sizeof(temp) - offset, "=== Network Traffic (Bytes RX/TX) ===\n");
+        while (fgets(line, sizeof(line), net_f)) {
+            char ifname[32];
+            unsigned long long rx_bytes = 0, tx_bytes = 0;
+            char *colon = strchr(line, ':');
+            if (colon) {
+                *colon = '\0';
+                char *name_ptr = line;
+                while (*name_ptr == ' ' || *name_ptr == '\t') name_ptr++;
+                strncpy(ifname, name_ptr, sizeof(ifname) - 1);
+                ifname[sizeof(ifname) - 1] = '\0';
+                
+                unsigned long long dummy;
+                if (sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu", 
+                            &rx_bytes, &dummy, &dummy, &dummy, &dummy, &dummy, &dummy, &dummy, &tx_bytes) >= 9) {
+                    offset += snprintf(temp + offset, sizeof(temp) - offset,
+                                       "Interface: %s | RX: %llu bytes | TX: %llu bytes\n",
+                                       ifname, rx_bytes, tx_bytes);
+                }
+            }
+        }
+        fclose(net_f);
+    }
+
+    strncpy(response_buffer, temp, max_len - 1);
+    response_buffer[max_len - 1] = '\0';
 }
 
 // Hàm ghi nhật ký sự kiện sử dụng các cuộc gọi hệ thống cấp thấp POSIX (Low-level I/O)
@@ -290,6 +401,36 @@ int main(void) {
                             log_event(client_ip, "RUN_CMD", "OK");
                         }
                     }
+                }
+            } else if (strcmp(buffer, CMD_GET_SYS_INFO) == 0) {
+                printf("Nhận lệnh GET_SYS_INFO từ client.\n");
+
+                char *info_buf = malloc(4096);
+                if (info_buf == NULL) {
+                    char err_response[] = "ERROR:Không thể cấp phát bộ nhớ";
+                    if (send(client_fd, err_response, sizeof(err_response), 0) < 0) {
+                        perror("Lỗi gửi phản hồi ERROR");
+                    }
+                    log_event(client_ip, "GET_SYS_INFO", "ERROR");
+                } else {
+                    get_system_info(info_buf, 4096);
+
+                    char ok_prefix[] = "OK:";
+                    if (send(client_fd, ok_prefix, strlen(ok_prefix), 0) < 0) {
+                        perror("Lỗi gửi tiền tố OK:");
+                    }
+
+                    if (send(client_fd, info_buf, strlen(info_buf), 0) < 0) {
+                        perror("Lỗi gửi thông tin hệ thống");
+                    }
+
+                    char end_char = '\0';
+                    if (send(client_fd, &end_char, 1, 0) < 0) {
+                        perror("Lỗi gửi ký tự kết thúc \\0");
+                    }
+
+                    free(info_buf);
+                    log_event(client_ip, "GET_SYS_INFO", "OK");
                 }
             } else {
                 // Ghi log sự kiện nhận lệnh không hợp lệ (ERROR)

@@ -60,6 +60,7 @@ int main(void) {
         int is_exit = (strcmp(buffer, CMD_EXIT) == 0);
         int is_read_log = (strcmp(buffer, CMD_READ_LOG) == 0);
         int is_run_cmd = (strncmp(buffer, CMD_RUN_CMD, strlen(CMD_RUN_CMD)) == 0);
+        int is_get_sys_info = (strcmp(buffer, CMD_GET_SYS_INFO) == 0);
 
         // Gửi lệnh qua socket (bao gồm ký tự null kết thúc \0)
         ssize_t valsend = send(sock_fd, buffer, strlen(buffer) + 1, 0);
@@ -68,7 +69,7 @@ int main(void) {
             break;
         }
 
-        if (is_read_log || is_run_cmd) {
+        if (is_read_log || is_run_cmd || is_get_sys_info) {
             int first_packet = 1;
             while (1) {
                 memset(buffer, 0, sizeof(buffer));
