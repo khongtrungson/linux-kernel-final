@@ -19,8 +19,9 @@ static DEFINE_MUTEX(buffer_mutex);
 
 static ssize_t my_proc_read(struct file *file, char __user *user_buf, size_t count, loff_t *ppos) {
     (void)file;
-    char temp_buffer[1200];
+    static char temp_buffer[1200];
     ssize_t len;
+
     struct sysinfo val;
     unsigned long free_ram_kb;
     
