@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include "common.h"
 
-int main(void) {
+int main(int argc, char *argv[]) {
     int sock_fd = -1;
     struct sockaddr_in serv_addr;
     char buffer[BUFFER_SIZE];
@@ -35,6 +35,74 @@ int main(void) {
         perror("Kết nối tới máy chủ thất bại");
         close(sock_fd);
         return EXIT_FAILURE;
+    }
+
+    if (argc > 1) {
+        char *cmd = argv[1];
+        ssize_t valsend = send(sock_fd, cmd, strlen(cmd) + 1, 0);
+        if (valsend < 0) {
+            perror("Lỗi gửi dữ liệu");
+            close(sock_fd);
+            return EXIT_FAILURE;
+        }
+
+        int is_read_log = (strcmp(cmd, CMD_READ_LOG) == 0);
+        int is_run_cmd = (strncmp(cmd, CMD_RUN_CMD, strlen(CMD_RUN_CMD)) == 0);
+        int is_get_sys_info = (strcmp(cmd, CMD_GET_SYS_INFO) == 0);
+
+        if (is_read_log || is_run_cmd || is_get_sys_info) {
+            int first_packet = 1;
+            while (1) {
+                memset(buffer, 0, sizeof(buffer));
+                ssize_t valread = recv(sock_fd, buffer, sizeof(buffer) - 1, 0);
+                if (valread < 0) {
+                    perror("Lỗi nhận phản hồi");
+                    close(sock_fd);
+                    return EXIT_FAILURE;
+                } else if (valread == 0) {
+                    break;
+                }
+
+                int has_null = 0;
+                if (buffer[valread - 1] == '\0') {
+                    has_null = 1;
+                    valread--;
+                }
+                buffer[valread] = '\0';
+
+                if (first_packet) {
+                    first_packet = 0;
+                    if (strncmp(buffer, "ERROR:", 6) == 0) {
+                        printf("Lỗi từ Server: %s\n", buffer + 6);
+                        break;
+                    } else if (strncmp(buffer, "OK:", 3) == 0) {
+                        printf("%s", buffer + 3);
+                    } else {
+                        printf("%s", buffer);
+                    }
+                } else {
+                    printf("%s", buffer);
+                }
+
+                if (has_null) {
+                    break;
+                }
+            }
+        } else {
+            memset(buffer, 0, sizeof(buffer));
+            ssize_t valread = recv(sock_fd, buffer, sizeof(buffer) - 1, 0);
+            if (valread < 0) {
+                perror("Lỗi nhận phản hồi");
+                close(sock_fd);
+                return EXIT_FAILURE;
+            } else if (valread > 0) {
+                buffer[valread] = '\0';
+                printf("Phản hồi từ Server: %s\n", buffer);
+            }
+        }
+
+        close(sock_fd);
+        return EXIT_SUCCESS;
     }
 
     printf("Kết nối thành công tới máy chủ %s:%d\n", SERVER_IP, SERVER_PORT);

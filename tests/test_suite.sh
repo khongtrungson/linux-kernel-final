@@ -75,6 +75,16 @@ check_files() {
          success=1
     fi
 
+    # Kiểm tra các mục menu từ xa mới trong system_tool.sh
+    if grep -q "Giám sát & Điều khiển từ xa (TCP)" "${FILE_SYSTEM_TOOL}" && \
+       grep -q "show_remote_menu" "${FILE_SYSTEM_TOOL}" && \
+       grep -q "handle_remote_menu" "${FILE_SYSTEM_TOOL}"; then
+         print_ok "Menu tương tác từ xa trong system_tool.sh đã được định nghĩa"
+    else
+         print_fail "Thiếu menu tương tác từ xa trong system_tool.sh"
+         success=1
+    fi
+
     return "${success}"
 }
 

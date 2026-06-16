@@ -409,6 +409,59 @@ manage_software() {
     return 0
 }
 
+# 4.6. Giao diện Giám sát & Điều khiển từ xa (TCP)
+show_remote_menu() {
+    echo "-----------------------------------------"
+    echo "       GIÁM SÁT & ĐIỀU KHIỂN TỪ XA       "
+    echo "-----------------------------------------"
+    echo "1. Xem thông tin giám sát hệ thống (GET_SYS_INFO)"
+    echo "2. Xem nhật ký hoạt động server (READ_LOG)"
+    echo "3. Chạy lệnh hệ thống từ xa (RUN_CMD)"
+    echo "4. Quay lại menu chính"
+    echo "-----------------------------------------"
+}
+
+handle_remote_menu() {
+    local client_bin="./socket/client"
+    if [ ! -f "${client_bin}" ]; then
+        echo "Lỗi: Không tìm thấy tệp nhị phân TCP Client tại '${client_bin}'!"
+        echo "Vui lòng chạy 'make' hoặc 'make -C socket' trước tiên để biên dịch."
+        return
+    fi
+
+    local choice cmd_input
+    while true; do
+        show_remote_menu
+        read -p "Lựa chọn của bạn (1-4): " choice
+        case "${choice}" in
+            1)
+                "${client_bin}" "GET_SYS_INFO"
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            2)
+                "${client_bin}" "READ_LOG"
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            3)
+                read -p "Nhập câu lệnh hệ thống cần thực thi từ xa: " cmd_input
+                if [ -z "${cmd_input}" ]; then
+                    echo "Lỗi: Câu lệnh không được để trống!"
+                else
+                    "${client_bin}" "RUN_CMD ${cmd_input}"
+                fi
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+            4)
+                break
+                ;;
+            *)
+                echo "Lỗi: Lựa chọn không hợp lệ! Vui lòng chọn từ 1 đến 4."
+                read -p "Nhấn Enter để tiếp tục..."
+                ;;
+        esac
+    done
+}
+
 # 5. Hàm hiển thị menu chính
 show_menu() {
     echo "========================================="
@@ -418,7 +471,8 @@ show_menu() {
     echo "2. Lập lịch Tác vụ"
     echo "3. Cấu hình Giờ Hệ thống"
     echo "4. Quản lý Phần mềm"
-    echo "5. Thoát"
+    echo "5. Giám sát & Điều khiển từ xa (TCP)"
+    echo "6. Thoát"
     echo "========================================="
 }
 
@@ -427,7 +481,7 @@ main_loop() {
     local choice
     while true; do
         show_menu
-        read -p "Vui lòng chọn một tính năng (1-5): " choice
+        read -p "Vui lòng chọn một tính năng (1-6): " choice
         case "${choice}" in
             1)
                 handle_file_menu
@@ -445,11 +499,14 @@ main_loop() {
                 read -p "Nhấn Enter để tiếp tục..."
                 ;;
             5)
+                handle_remote_menu
+                ;;
+            6)
                 echo "Cảm ơn bạn đã sử dụng Shell Tool. Tạm biệt!"
                 exit 0
                 ;;
             *)
-                echo "Lỗi: Lựa chọn không hợp lệ! Vui lòng chọn từ 1 đến 5."
+                echo "Lỗi: Lựa chọn không hợp lệ! Vui lòng chọn từ 1 đến 6."
                 read -p "Nhấn Enter để tiếp tục..."
                 ;;
         esac
