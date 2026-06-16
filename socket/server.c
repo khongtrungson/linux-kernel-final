@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +9,19 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/wait.h>
+#include <errno.h>
 #include "common.h"
+
+// Hàm xử lý tín hiệu SIGCHLD để dọn dẹp tiến trình con zombie
+void sigchld_handler(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+        // Dọn dẹp tất cả tiến trình con đã kết thúc
+    }
+    errno = saved_errno;
+}
 
 // Hàm ghi nhật ký sự kiện sử dụng các cuộc gọi hệ thống cấp thấp POSIX (Low-level I/O)
 void log_event(const char *client_ip, const char *command, const char *status) {
@@ -61,6 +74,16 @@ int main(void) {
     // Bỏ qua tín hiệu SIGPIPE để tránh crash server khi client đột ngột ngắt kết nối
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         perror("Lỗi thiết lập bỏ qua SIGPIPE");
+        return EXIT_FAILURE;
+    }
+
+    // Đăng ký xử lý tín hiệu SIGCHLD tránh zombie
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) < 0) {
+        perror("Lỗi thiết lập sigaction cho SIGCHLD");
         return EXIT_FAILURE;
     }
 
@@ -195,6 +218,77 @@ int main(void) {
                             perror("Lỗi gửi ký tự kết thúc \\0");
                         }
                         log_event(client_ip, CMD_READ_LOG, "OK");
+                    }
+                }
+            } else if (strncmp(buffer, CMD_RUN_CMD, strlen(CMD_RUN_CMD)) == 0) {
+                char *command_str = buffer + strlen(CMD_RUN_CMD);
+                printf("Nhận lệnh RUN_CMD từ client: %s\n", command_str);
+
+                int pipefd[2];
+                if (pipe(pipefd) < 0) {
+                    perror("Lỗi tạo pipe");
+                    char err_response[] = "ERROR:Không thể tạo đường ống IPC";
+                    if (send(client_fd, err_response, sizeof(err_response), 0) < 0) {
+                        perror("Lỗi gửi phản hồi ERROR");
+                    }
+                    log_event(client_ip, "RUN_CMD", "ERROR");
+                } else {
+                    pid_t pid = fork();
+                    if (pid < 0) {
+                        perror("Lỗi fork");
+                        char err_response[] = "ERROR:Không thể fork tiến trình con";
+                        if (send(client_fd, err_response, sizeof(err_response), 0) < 0) {
+                            perror("Lỗi gửi phản hồi ERROR");
+                        }
+                        close(pipefd[0]);
+                        close(pipefd[1]);
+                        log_event(client_ip, "RUN_CMD", "ERROR");
+                    } else if (pid == 0) {
+                        // Tiến trình con (Worker Process)
+                        close(pipefd[0]);
+                        if (dup2(pipefd[1], STDOUT_FILENO) < 0 || dup2(pipefd[1], STDERR_FILENO) < 0) {
+                            perror("Lỗi dup2");
+                            _exit(127);
+                        }
+                        close(pipefd[1]);
+
+                        char *args[] = {"sh", "-c", command_str, NULL};
+                        execvp("/bin/sh", args);
+                        perror("Lỗi execvp");
+                        _exit(127);
+                    } else {
+                        // Tiến trình cha (Server chính)
+                        close(pipefd[1]);
+
+                        char ok_prefix[] = "OK:";
+                        if (send(client_fd, ok_prefix, strlen(ok_prefix), 0) < 0) {
+                            perror("Lỗi gửi tiền tố OK:");
+                        }
+
+                        char read_buf[BUFFER_SIZE];
+                        ssize_t bytes_read;
+                        int send_failed = 0;
+                        while ((bytes_read = read(pipefd[0], read_buf, sizeof(read_buf))) > 0) {
+                            if (send(client_fd, read_buf, bytes_read, 0) < 0) {
+                                perror("Lỗi gửi dữ liệu log qua socket");
+                                send_failed = 1;
+                                break;
+                            }
+                        }
+
+                        if (bytes_read < 0) {
+                            perror("Lỗi đọc dữ liệu từ pipe");
+                        }
+
+                        close(pipefd[0]);
+
+                        if (!send_failed) {
+                            char end_char = '\0';
+                            if (send(client_fd, &end_char, 1, 0) < 0) {
+                                perror("Lỗi gửi ký tự kết thúc \\0");
+                            }
+                            log_event(client_ip, "RUN_CMD", "OK");
+                        }
                     }
                 }
             } else {
