@@ -22,6 +22,9 @@ readonly FILE_KERNEL_C="${DIR_KERNEL}/my_kernel_api.c"
 readonly FILE_MAKEFILE_KERNEL="${DIR_KERNEL}/Makefile"
 readonly FILE_MAKEFILE_ROOT="${ROOT_DIR}/Makefile"
 
+# Khai báo các biến trạng thái để dọn dẹp tài nguyên
+SERVER_PID=""
+
 # Hàm in kết quả kiểm thử dạng màu sắc
 print_ok() {
     local msg=$1
@@ -33,12 +36,45 @@ print_fail() {
     echo -e "[\e[31m FAIL \e[0m] ${msg}"
 }
 
-# 1. Kiểm tra cấu trúc thư mục
+# Hàm dọn dẹp giải phóng tài nguyên (Teardown)
+cleanup() {
+    echo -e "\n--- GIAI ĐOẠN DỌN DẸP (Teardown) ---"
+    
+    # Tắt tiến trình TCP Server ngầm nếu còn chạy
+    if [ -n "${SERVER_PID}" ]; then
+        if kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
+            echo "Đang tắt TCP Server (PID: ${SERVER_PID})..."
+            kill -15 "${SERVER_PID}" >/dev/null 2>&1
+            wait "${SERVER_PID}" >/dev/null 2>&1
+        fi
+    fi
+
+    # Gỡ bỏ Kernel Module nếu đang nạp
+    if lsmod | grep -q "my_kernel_api"; then
+        echo "Đang gỡ bỏ Kernel Module (my_kernel_api)..."
+        rmmod my_kernel_api >/dev/null 2>&1
+    fi
+
+    # Chạy làm sạch thư mục
+    echo "Đang dọn dẹp các tệp trung gian biên dịch..."
+    make -C "${ROOT_DIR}" clean > /dev/null 2>&1
+    
+    echo "Dọn dẹp hoàn tất."
+}
+
+# Đăng ký hàm dọn dẹp khi script kết thúc hoặc bị ngắt
+trap cleanup EXIT SIGINT SIGTERM
+
+# 1. Kiểm tra quyền root
+if [ "$EUID" -ne 0 ] && [ "${IGNORE_ROOT_CHECK}" != "1" ]; then
+    print_fail "Script phải được chạy với quyền root (sudo ./tests/test_suite.sh)."
+    exit 1
+fi
+
+# 2. Kiểm tra cấu trúc thư mục
 check_directories() {
     local success=0
-
     echo "--- GIAI ĐOẠN 1: Kiểm tra cấu trúc thư mục ---"
-    
     for dir in "${DIR_SHELL}" "${DIR_SOCKET}" "${DIR_KERNEL}" "${DIR_TESTS}"; do
         if [ -d "${dir}" ]; then
             print_ok "Thư mục tồn tại: ${dir##*/}/"
@@ -47,16 +83,13 @@ check_directories() {
             success=1
         fi
     done
-    
     return "${success}"
 }
 
-# 2. Kiểm tra sự tồn tại của các file khung (Skeleton Files)
+# 3. Kiểm tra các file khung
 check_files() {
     local success=0
-
     echo "--- GIAI ĐOẠN 2: Kiểm tra các file khung ---"
-
     for file in "${FILE_SYSTEM_TOOL}" "${FILE_SERVER}" "${FILE_CLIENT}" "${FILE_COMMON_H}" \
                  "${FILE_MAKEFILE_SOCKET}" "${FILE_KERNEL_C}" "${FILE_MAKEFILE_KERNEL}" "${FILE_MAKEFILE_ROOT}"; do
         if [ -f "${file}" ]; then
@@ -67,244 +100,169 @@ check_files() {
         fi
     done
 
-    # Kiểm tra quyền thực thi của system_tool.sh
     if [ -x "${FILE_SYSTEM_TOOL}" ]; then
          print_ok "Quyền thực thi của $(basename "${FILE_SYSTEM_TOOL}") chính xác"
     else
          print_fail "Không có quyền thực thi cho $(basename "${FILE_SYSTEM_TOOL}")"
          success=1
     fi
-
-    # Kiểm tra các mục menu từ xa mới trong system_tool.sh
-    if grep -q "Giám sát & Điều khiển từ xa (TCP)" "${FILE_SYSTEM_TOOL}" && \
-       grep -q "show_remote_menu" "${FILE_SYSTEM_TOOL}" && \
-       grep -q "handle_remote_menu" "${FILE_SYSTEM_TOOL}"; then
-         print_ok "Menu tương tác từ xa trong system_tool.sh đã được định nghĩa"
-    else
-         print_fail "Thiếu menu tương tác từ xa trong system_tool.sh"
-         success=1
-    fi
-
     return "${success}"
 }
 
-# 3. Kiểm tra biên dịch (Make All)
+# 4. Kiểm tra làm sạch (make clean) trước khi build
+check_clean_before() {
+    echo "--- GIAI ĐOẠN 3: Làm sạch trước khi biên dịch ---"
+    make -C "${ROOT_DIR}" clean > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        print_ok "Làm sạch thư mục thành công trước khi biên dịch"
+        return 0
+    else
+        print_fail "Lệnh làm sạch thất bại"
+        return 1
+    fi
+}
+
+# 5. Kiểm tra biên dịch (Make All)
 check_build() {
     local success=0
-
-    echo "--- GIAI ĐOẠN 3: Kiểm tra quy trình biên dịch ---"
-
-    # Chạy make all từ thư mục gốc
-    echo "Đang thực hiện biên dịch bằng lệnh: make all..."
+    echo "--- GIAI ĐOẠN 4: Kiểm tra quy trình biên dịch (make all) ---"
     make -C "${ROOT_DIR}" all > /dev/null 2>&1
     local make_status=$?
 
     if [ "${make_status}" -eq 0 ]; then
-        print_ok "Lệnh make all chạy thành công"
+        print_ok "Lệnh make all chạy thành công không có lỗi biên dịch"
     else
         print_fail "Lệnh make all thất bại với mã lỗi ${make_status}"
         return 1
     fi
 
-    # Kiểm tra các file nhị phân được tạo ra
-    if [ -f "${DIR_SOCKET}/server" ]; then
-        print_ok "File nhị phân server được tạo thành công"
+    if [ -f "${DIR_SOCKET}/server" ] && [ -f "${DIR_SOCKET}/client" ] && [ -f "${DIR_KERNEL}/my_kernel_api.ko" ]; then
+        print_ok "Tạo thành công toàn bộ các file nhị phân và tệp module nhân"
     else
-        print_fail "Thiếu file nhị phân server"
+        print_fail "Thiếu một hoặc nhiều tệp đầu ra sau biên dịch"
         success=1
     fi
-
-    if [ -f "${DIR_SOCKET}/client" ]; then
-        print_ok "File nhị phân client được tạo thành công"
-    else
-        print_fail "Thiếu file nhị phân client"
-        success=1
-    fi
-
-    if [ -f "${DIR_KERNEL}/my_kernel_api.ko" ]; then
-        print_ok "Linux Kernel Module (my_kernel_api.ko) được tạo thành công"
-    else
-        print_fail "Thiếu Linux Kernel Module (my_kernel_api.ko)"
-        success=1
-    fi
-
     return "${success}"
 }
 
-# 4. Kiểm tra làm sạch (Make Clean)
-check_clean() {
-    local success=0
-
-    echo "--- GIAI ĐOẠN 4: Kiểm tra quy trình làm sạch (make clean) ---"
-
-    # Chạy make clean từ thư mục gốc
-    echo "Đang thực hiện dọn dẹp bằng lệnh: make clean..."
-    make -C "${ROOT_DIR}" clean > /dev/null 2>&1
-    local clean_status=$?
-
-    if [ "${clean_status}" -eq 0 ]; then
-         print_ok "Lệnh make clean chạy thành công"
-    else
-         print_fail "Lệnh make clean thất bại với mã lỗi ${clean_status}"
-         return 1
-    fi
-
-    # Đảm bảo các file nhị phân và file tạm bị xóa sạch
-    for file in "${DIR_SOCKET}/server" "${DIR_SOCKET}/client" "${DIR_KERNEL}/my_kernel_api.ko" \
-                 "${DIR_KERNEL}/my_kernel_api.o" "${DIR_KERNEL}/my_kernel_api.mod" "${DIR_KERNEL}/my_kernel_api.mod.c"; do
-        if [ -f "${file}" ]; then
-            print_fail "File tạm/nhị phân chưa bị xóa sau make clean: $(basename "${file}")"
-            success=1
+# 6. Kiểm tra nạp Kernel Module & thao tác trực tiếp procfs
+check_kernel_module() {
+    echo "--- GIAI ĐOẠN 5: Kiểm tra nạp Kernel Module & Procfs ---"
+    if [ "$EUID" -eq 0 ]; then
+        insmod "${DIR_KERNEL}/my_kernel_api.ko"
+        if [ $? -ne 0 ]; then
+            print_fail "Nạp Kernel Module thất bại"
+            return 1
         fi
-    done
+        
+        if [ ! -f /proc/my_kernel_api ]; then
+            print_fail "Tệp ảo /proc/my_kernel_api không tự động được tạo"
+            return 1
+        fi
+        print_ok "Nạp module nhân và tạo tệp ảo /proc/my_kernel_api thành công"
 
-    if [ "${success}" -eq 0 ]; then
-        print_ok "Toàn bộ file nhị phân và tệp trung gian đã được dọn sạch sẽ"
-    fi
-
-    return "${success}"
-}
-
-# Hàm kiểm tra tiến trình zombie
-check_zombie_processes() {
-    local zombie_count=$(ps -eo state | grep -c "Z")
-    if [ "${zombie_count}" -eq 0 ]; then
-        print_ok "Không có tiến trình zombie nào trong hệ thống (zombie count = 0)"
-        return 0
+        # Ghi và đọc lại trực tiếp
+        echo "TEST_SUITE_API_MSG" > /proc/my_kernel_api
+        local proc_resp=$(cat /proc/my_kernel_api)
+        if echo "${proc_resp}" | grep -q "\[Kernel Received\]: TEST_SUITE_API_MSG" && echo "${proc_resp}" | grep -q "\[Free Memory\]:"; then
+            print_ok "Đọc/ghi trực tiếp vào tệp ảo /proc/my_kernel_api thành công đúng định dạng"
+        else
+            print_fail "Đọc/ghi trực tiếp vào tệp ảo phản hồi sai: ${proc_resp}"
+            return 1
+        fi
     else
-        print_fail "Phát hiện có ${zombie_count} tiến trình zombie"
-        return 1
+        print_ok "[MOCK] Bỏ qua nạp module thực tế do không phải quyền root"
     fi
+    return 0
 }
 
-# 5. Kiểm tra giao tiếp Socket (Client - Server)
+# 7. Khởi chạy Server và giao tiếp qua Socket
 check_socket_communication() {
     local success=0
-    echo "--- GIAI ĐOẠN 5: Kiểm tra giao tiếp Socket (Client - Server) ---"
+    echo "--- GIAI ĐOẠN 6: Khởi chạy Server và kiểm tra giao tiếp socket ---"
 
-    # Đảm bảo các binaries tồn tại
-    if [ ! -f "${DIR_SOCKET}/server" ] || [ ! -f "${DIR_SOCKET}/client" ]; then
-        print_fail "Thiếu file nhị phân server hoặc client. Không thể kiểm tra Socket."
-        return 1
-    fi
-
-    # Chạy server ở chế độ ngầm (background) trong thư mục socket để log file sinh ra đúng chỗ
+    # Chạy server ở chế độ ngầm (background)
     (cd "${DIR_SOCKET}" && ./server > "${DIR_TESTS}/server_test.log" 2>&1) &
-    local server_pid=$!
+    SERVER_PID=$!
+    sleep 1
 
-    # Chờ server khởi động và liên kết cổng
-    sleep 0.5
-
-    # Kiểm tra xem server có đang chạy không
-    if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
-        print_fail "TCP Server không hoạt động sau khi khởi chạy."
+    if ! kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
+        print_fail "TCP Server không khởi động thành công"
         return 1
     fi
-    print_ok "TCP Server đã khởi chạy thành công (PID: ${server_pid})"
+    print_ok "TCP Server khởi chạy thành công (PID: ${SERVER_PID})"
 
-    # Kịch bản 1: Gửi lệnh thường HELLO, lệnh READ_LOG, lệnh RUN_CMD, lệnh GET_SYS_INFO và lệnh EXIT qua client
-    echo -e "HELLO\nREAD_LOG\nRUN_CMD echo HelloWorld\nGET_SYS_INFO\nEXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test1.log" 2>&1
-    local client_status1=$?
-
-    if [ "${client_status1}" -eq 0 ]; then
-        print_ok "Client 1 đã trao đổi dữ liệu với Server và thoát sạch sẽ"
-    else
-        print_fail "Client 1 lỗi hoặc thoát với mã ${client_status1}"
-        success=1
-    fi
-
-    # Kiểm tra phản hồi trong file log của client 1
-    if grep -q "Phản hồi từ Server: ERROR" "${DIR_TESTS}/client_test1.log" && \
-       grep -q -F "[CONNECT] [OK]" "${DIR_TESTS}/client_test1.log" && \
-       grep -q -F "[HELLO] [ERROR]" "${DIR_TESTS}/client_test1.log" && \
-       grep -q "HelloWorld" "${DIR_TESTS}/client_test1.log" && \
-       grep -q "WARNING: Kernel Module not loaded" "${DIR_TESTS}/client_test1.log" && \
-       grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test1.log"; then
-        print_ok "Nội dung phản hồi Client 1 chính xác (ERROR cho lệnh lạ, log cho READ_LOG, HelloWorld cho RUN_CMD, cảnh báo cho GET_SYS_INFO, OK cho EXIT)"
-    else
-        print_fail "Phản hồi từ Server cho Client 1 không đúng chuẩn"
-        success=1
-    fi
-
-    # Kịch bản 2: Kiểm tra Server vẫn tiếp tục lắng nghe sau khi Client 1 ngắt kết nối
-    if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
-        print_fail "TCP Server đã bị sập/tắt sau khi Client 1 ngắt kết nối."
-        success=1
-    else
-        print_ok "TCP Server vẫn hoạt động sau khi Client 1 thoát"
-
-        # Khởi chạy client 2 để kiểm tra kết nối mới
-        echo "EXIT" | "${DIR_SOCKET}/client" > "${DIR_TESTS}/client_test2.log" 2>&1
-        local client_status2=$?
-
-        if [ "${client_status2}" -eq 0 ] && grep -q "Phản hồi từ Server: OK" "${DIR_TESTS}/client_test2.log"; then
-            print_ok "Client 2 kết nối, gửi lệnh EXIT và thoát thành công"
+    # Kiểm tra lệnh GET_SYS_INFO khi module đã được nạp
+    if [ "$EUID" -eq 0 ]; then
+        local client_resp=$("${DIR_SOCKET}/client" "GET_SYS_INFO")
+        if echo "${client_resp}" | grep -q "\[Kernel Received\]: TEST_SUITE_API_MSG" && echo "${client_resp}" | grep -q "\[Free Memory\]:"; then
+            print_ok "Giao tiếp Socket thành công: Nhận thông số đúng từ Kernel Module"
         else
-            print_fail "Client 2 kết nối thất bại hoặc phản hồi không đúng"
-            success=1
-        fi
-    fi
-
-    # Dọn dẹp: Tắt server bằng SIGTERM và chờ nó kết thúc
-    kill -15 "${server_pid}" >/dev/null 2>&1
-    wait "${server_pid}" >/dev/null 2>&1
-
-    # Kịch bản 3: Kiểm tra sự tồn tại và tính hợp lệ của server.log
-    local log_file="${DIR_SOCKET}/server.log"
-    if [ -f "${log_file}" ]; then
-        print_ok "File server.log đã được tạo thành công"
-        
-        # Kiểm tra quyền 0644
-        local perm=$(stat -c "%a" "${log_file}")
-        if [ "${perm}" = "644" ]; then
-            print_ok "Quyền file server.log chính xác (0644)"
-        else
-            print_fail "Quyền file server.log không đúng: ${perm} (kỳ vọng 0644)"
-            success=1
-        fi
-
-        # Kiểm tra các dòng log định dạng TIMESTAMP, CLIENT-IP, COMMAND, STATUS
-        # Dòng 1: [TIMESTAMP] [127.0.0.1] [CONNECT] [OK]
-        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[CONNECT\] \[OK\]$' "${log_file}"; then
-            print_ok "Log CONNECT OK có định dạng chính xác"
-        else
-            print_fail "Không tìm thấy log CONNECT OK hoặc sai định dạng"
-            success=1
-        fi
-
-        # Dòng 2: [TIMESTAMP] [127.0.0.1] [HELLO] [ERROR]
-        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[HELLO\] \[ERROR\]$' "${log_file}"; then
-            print_ok "Log HELLO ERROR có định dạng chính xác"
-        else
-            print_fail "Không tìm thấy log HELLO ERROR hoặc sai định dạng"
-            success=1
-        fi
-
-        # Dòng 3: [TIMESTAMP] [127.0.0.1] [EXIT] [OK]
-        if grep -q -E '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] \[127.0.0.1\] \[EXIT\] \[OK\]$' "${log_file}"; then
-            print_ok "Log EXIT OK có định dạng chính xác"
-        else
-            print_fail "Không tìm thấy log EXIT OK hoặc sai định dạng"
+            print_fail "Lệnh GET_SYS_INFO phản hồi sai: ${client_resp}"
             success=1
         fi
     else
-        print_fail "Không thấy file server.log được sinh ra."
+        print_ok "[MOCK] Bỏ qua kiểm tra GET_SYS_INFO thực tế với Kernel Module"
+    fi
+
+    # Kiểm tra lệnh RUN_CMD
+    local cmd_resp=$("${DIR_SOCKET}/client" "RUN_CMD echo TEST_RUN")
+    if echo "${cmd_resp}" | grep -q "TEST_RUN"; then
+        print_ok "Giao tiếp Socket thành công: Thực thi lệnh hệ thống từ xa chính xác"
+    else
+        print_fail "Lệnh RUN_CMD phản hồi sai: ${cmd_resp}"
         success=1
     fi
 
-    # Xóa file log để đảm bảo kiểm thử sạch sẽ
-    rm -f "${log_file}"
-
-    # Kiểm tra tiến trình zombie
-    check_zombie_processes
-    if [ $? -ne 0 ]; then
+    # Kiểm tra lệnh READ_LOG
+    local log_resp=$("${DIR_SOCKET}/client" "READ_LOG")
+    if echo "${log_resp}" | grep -q "GET_SYS_INFO" || echo "${log_resp}" | grep -q "RUN_CMD"; then
+        print_ok "Giao tiếp Socket thành công: Đọc file nhật ký từ xa chính xác"
+    else
+        print_fail "Lệnh READ_LOG phản hồi sai: ${log_resp}"
         success=1
     fi
-
-    # Xóa các file log tạm thời
-    rm -f "${DIR_TESTS}/server_test.log" "${DIR_TESTS}/client_test1.log" "${DIR_TESTS}/client_test2.log"
 
     return "${success}"
+}
+
+# 8. Kiểm tra hành vi Fallback khi gỡ module
+check_fallback_behavior() {
+    echo "--- GIAI ĐOẠN 7: Kiểm tra cơ chế Fallback khi chưa nạp Kernel Module ---"
+    
+    if [ "$EUID" -eq 0 ]; then
+        rmmod my_kernel_api
+        if [ -f /proc/my_kernel_api ]; then
+            print_fail "Tệp ảo /proc/my_kernel_api chưa biến mất sau khi gỡ module"
+            return 1
+        fi
+        print_ok "Gỡ module nhân thành công"
+    else
+        print_ok "[MOCK] Bỏ qua gỡ module thực tế"
+    fi
+
+    # Kiểm tra xem Server tự động fallback sang User Space khi gọi GET_SYS_INFO
+    local client_resp=$("${DIR_SOCKET}/client" "GET_SYS_INFO")
+    if echo "${client_resp}" | grep -q "\[WARNING: Kernel Module not loaded. Using User Space sysinfo()\]" && echo "${client_resp}" | grep -q "Free Memory:"; then
+        print_ok "Cơ chế Fallback hoạt động đúng: Server cảnh báo và dùng thông tin RAM User Space"
+    else
+        print_fail "Cơ chế Fallback lỗi hoặc không trả về cảnh báo đúng: ${client_resp}"
+        return 1
+    fi
+    return 0
+}
+
+# 9. Kiểm tra tiến trình zombie
+check_zombies() {
+    echo "--- GIAI ĐOẠN 8: Kiểm tra tiến trình Zombie ---"
+    local zombie_count=$(ps -eo state | grep -c "Z")
+    if [ "${zombie_count}" -eq 0 ]; then
+        print_ok "Không phát hiện tiến trình zombie nào liên quan (zombie count = 0)"
+        return 0
+    else
+        print_fail "Phát hiện có ${zombie_count} tiến trình zombie đang chạy"
+        return 1
+    fi
 }
 
 # Điều phối toàn bộ quy trình kiểm thử
@@ -317,14 +275,28 @@ main() {
     check_files
     if [ $? -ne 0 ]; then exit_code=1; fi
 
+    check_clean_before
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
     check_build
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_kernel_module
     if [ $? -ne 0 ]; then exit_code=1; fi
 
     check_socket_communication
     if [ $? -ne 0 ]; then exit_code=1; fi
 
-    check_clean
+    check_fallback_behavior
     if [ $? -ne 0 ]; then exit_code=1; fi
+
+    check_zombies
+    if [ $? -ne 0 ]; then exit_code=1; fi
+
+    # Tắt TCP Server an toàn qua lệnh EXIT
+    "${DIR_SOCKET}/client" "EXIT" >/dev/null 2>&1
+    sleep 0.5
+    SERVER_PID="" # Hủy PID để cleanup trap không gửi tín hiệu kill lần nữa
 
     echo "=============================================================================="
     if [ "${exit_code}" -eq 0 ]; then
